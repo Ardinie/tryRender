@@ -1,0 +1,15 @@
+# Ignore virtual environments
+venv/
+.env
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore image uploads and processed files
+static/
+uploads/
+
+# Ignore secret keys and credentials
+config.json
+*.json
