@@ -3,9 +3,12 @@ import numpy as np
 import torch
 from torch import tensor
 from torchvision.transforms import ToTensor, Resize
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Form
 from PIL import Image
 from scipy.ndimage import binary_fill_holes, binary_dilation, binary_erosion
+from diffusers import AutoPipelineForInpainting
+from fastapi.responses import JSONResponse
+import requests
 
 app = FastAPI()
 
@@ -26,12 +29,10 @@ def apply_pattern_to_shape(pattern_img_tensor, mask_tensor, plain_img_tensor):
 
 @app.post("/process-fabric/")
 async def process_fabric(
-    plain_image_choice: int = Query(1, ge=1, le=5, description="Choice of plain image (1, 2, 3,4 or 5)"),
+    plain_image_choice: int = Query(1, ge=1, le=5, description="Choice of plain image (1, 2, 3, 4 or 5)"),
     pattern_image: UploadFile = File(...),
 ):
     try:
-        print(f"Selected plain image choice: {plain_image_choice}")
-
         # Plain image paths mapping
         plain_image_paths = {
             1: "static/plain_image_1.jpg",
@@ -100,3 +101,67 @@ async def process_fabric(
         import traceback
         print("Error traceback:", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Image processing failed: {e}")
+
+
+@app.on_event("startup")
+async def load_model():
+    global pipe, device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    pipe = AutoPipelineForInpainting.from_pretrained(
+        "stabilityai/stable-diffusion-2-inpainting",
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32
+    ).to(device)
+    print("Model loaded successfully")
+
+@app.post("/inpaint/")
+async def inpaint(
+    prompt: str = Form(...),
+    image_url: UploadFile = File(...),
+    mask_image: str = Form(...),
+):
+    try:
+        
+        mask_map = {
+            "A1": "static/A1.png",
+            "B1": "static/B1.png",
+            "C1": "static/C1.png",
+            "A2": "static/A2.png",
+            "B2": "static/B2.png",
+            "C2": "static/C22.png",
+            "A3": "static/A3.png",
+            "B3": "static/B3.png",
+            "C3": "static/C3.png",
+            "A4": "static/A4.png",
+            "B4": "static/B4.png",
+            "C4": "static/C4.png",
+            "B5": "static/B5.png",
+            "C5": "static/C5.png",
+        }
+        # Check if the provided mask identifier exists
+        if mask_image not in mask_map:
+            return JSONResponse(content={"status": "error", "message": "Invalid mask identifier"})
+
+        mask_path = mask_map[mask_image]
+        mask_image_pil = Image.open(mask_path).resize((256, 256))
+        print("Preprocess mask successfully")
+        
+        # Set random generator for reproducibility
+        generator = torch.Generator(device=device).manual_seed(0)
+
+        # Perform inpainting
+        output = await asyncio.to_thread(
+            pipe,  
+            prompt=prompt,
+            image=image,
+            mask_image=mask_image_pil,
+            guidance_scale=8.0,
+            num_inference_steps=15,
+            strength=0.99,
+            generator=generator,
+        )
+        result_image = output.images[0]
+
+    except requests.exceptions.RequestException as e:
+        return JSONResponse(content={"status": "error", "message": f"Image fetch error: {str(e)}"})
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)})
